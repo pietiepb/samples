@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -9,6 +10,7 @@ using Microsoft.AspNetCore.Mvc.Formatters.Internal;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Matching;
 using Microsoft.Net.Http.Headers;
+using MediaTypeHeaderValue = Microsoft.Net.Http.Headers.MediaTypeHeaderValue;
 
 namespace ProducesMatcherPolicy
 {
@@ -92,13 +94,13 @@ namespace ProducesMatcherPolicy
                     foreach (var kvp in edges)
                     {
                         // The edgeKey maps to a possible request header value
-                        var edgeKey = new MediaType(kvp.Key);
+                        var edgeKey = new MediaTypeHeaderValue(kvp.Key);
 
                         for (var j = 0; j < contentTypes.Count; j++)
                         {
                             var contentType = contentTypes[j];
 
-                            var mediaType = new MediaType(contentType);
+                            var mediaType = new MediaTypeHeaderValue(contentType);
 
                             // Example: 'application/json' is subset of 'application/*'
                             // 
@@ -154,7 +156,7 @@ namespace ProducesMatcherPolicy
             // Since our 'edges' can have wildcards, we do a sort based on how wildcard-ey they
             // are then then execute them in linear order.
             var ordered = edges
-                .Select(e => (mediaType: new MediaType((string)e.State), destination: e.Destination))
+                .Select(e => (mediaType: new MediaTypeHeaderValue((string)e.State), destination: e.Destination))
                 .OrderBy(e => GetScore(e.mediaType))
                 .ToArray();
 
@@ -172,7 +174,7 @@ namespace ProducesMatcherPolicy
             return new ProducesPolicyJumpTable(exitDestination, ordered);
         }
 
-        private int GetScore(in MediaType mediaType)
+        private int GetScore(in MediaTypeHeaderValue mediaType)
         {
             // Higher score == lower priority - see comments on MediaType.
             if (mediaType.MatchesAllTypes)
@@ -206,10 +208,10 @@ namespace ProducesMatcherPolicy
 
         private class ProducesPolicyJumpTable : PolicyJumpTable
         {
-            private (MediaType mediaType, int destination)[] _destinations;
+            private (MediaTypeHeaderValue mediaType, int destination)[] _destinations;
             private int _exitDestination;
 
-            public ProducesPolicyJumpTable(int exitDestination, (MediaType mediaType, int destination)[] destinations)
+            public ProducesPolicyJumpTable(int exitDestination, (MediaTypeHeaderValue mediaType, int destination)[] destinations)
             {
                 _exitDestination = exitDestination;
                 _destinations = destinations;
@@ -223,23 +225,20 @@ namespace ProducesMatcherPolicy
                     return _exitDestination;
                 }
 
-                var mediaTypesWithQuality = new List<MediaTypeSegmentWithQuality>();
-                AcceptHeaderParser.ParseAcceptHeader(acceptContentType, mediaTypesWithQuality);
-                mediaTypesWithQuality.Sort(_sortFunction);
+                var mediaTypes = MediaTypeHeaderValue.ParseList(acceptContentType)
+                    .OrderByDescending(mediaType => MediaTypeWithQualityHeaderValue.Parse(mediaType.ToString()).Quality);
 
                 var destinations = _destinations;
 
                 // Loop through accept values. Highest quality come first
-                for (int i = 0; i < mediaTypesWithQuality.Count; i++)
+                foreach (var mediaTypeHeaderValue in mediaTypes)
                 {
-                    var requestMediaType = new MediaType(mediaTypesWithQuality[i].MediaType);
-
                     for (var j = 0; j < destinations.Length; j++)
                     {
                         // Don't test */* because we want to find a specified match
                         // Exit destination will handle */*
-                        if (!destinations[j].mediaType.MatchesAllTypes
-                            && requestMediaType.IsSubsetOf(destinations[j].mediaType))
+                       if (!destinations[j].mediaType.MatchesAllTypes
+                            && mediaTypeHeaderValue.IsSubsetOf(destinations[j].mediaType))
                         {
                             return destinations[j].destination;
                         }
@@ -248,11 +247,6 @@ namespace ProducesMatcherPolicy
 
                 return _exitDestination;
             }
-
-            private static readonly Comparison<MediaTypeSegmentWithQuality> _sortFunction = (left, right) =>
-            {
-                return left.Quality > right.Quality ? -1 : (left.Quality == right.Quality ? 0 : 1);
-            };
         }
     }
 }
